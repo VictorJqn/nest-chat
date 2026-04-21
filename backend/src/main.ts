@@ -3,6 +3,8 @@ import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  // Adrien: plus simple pour tester vite le front + websocket en local
+  app.enableCors();
   await app.listen(process.env.PORT ?? 3000);
 }
 bootstrap();

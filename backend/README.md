@@ -44,6 +44,90 @@ $ npm run start:dev
 $ npm run start:prod
 ```
 
+## Prisma (simple models)
+
+This project now has two Prisma models:
+
+- `User` (`id`, `email`, `name`, `passwordHash`, timestamps)
+- `Message` (`id`, `content`, `userId`, `createdAt`)
+
+### Create database tables
+
+```bash
+$ npm run prisma:migrate:dev -- --name init
+$ npm run prisma:generate
+```
+
+### Test quickly with HTTP
+
+Start API:
+
+```bash
+$ npm run start:dev
+```
+
+Register a user:
+
+```bash
+$ curl -X POST http://localhost:3000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","name":"Alice","password":"secret123"}'
+```
+
+Login:
+
+```bash
+$ curl -X POST http://localhost:3000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"secret123"}'
+```
+
+Create a message with the returned `user.id` (from register or /users):
+
+```bash
+$ curl -X POST http://localhost:3000/messages \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"PUT_USER_ID_HERE","content":"Hello from Prisma"}'
+```
+
+List data:
+
+```bash
+$ curl http://localhost:3000/users
+$ curl http://localhost:3000/messages
+```
+
+### Test websocket (general chat)
+
+Socket events:
+
+- emit `general:join` with `{ "userId": "..." }`
+- emit `general:send` with `{ "content": "..." }`
+
+Server events:
+
+- `general:init` (last 30 messages)
+- `general:new_message`
+- `general:user_joined`
+- `general:user_left`
+
+Quick test with browser console (after `npm run start:dev`):
+
+```js
+const { io } = await import('https://cdn.socket.io/4.7.5/socket.io.esm.min.js');
+const s = io('http://localhost:3000');
+s.emit('general:join', { userId: 'PUT_USER_ID_HERE' });
+s.on('general:init', (d) => console.log('init', d));
+s.on('general:new_message', (d) => console.log('new', d));
+s.emit('general:send', { content: 'salut le general chat' });
+```
+
+### Optional: inspect DB in Prisma Studio
+
+```bash
+$ npm run prisma:studio
+```
+
 ## Run tests
 
 ```bash
