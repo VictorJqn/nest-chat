@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
 
@@ -9,13 +9,19 @@ export class MessagesService {
     private readonly usersService: UsersService,
   ) {}
 
+  private get msgInclude() {
+    return {
+      user: { select: this.usersService.userSafeSelect },
+      reactions: {
+        orderBy: { createdAt: 'asc' as const },
+        include: { user: { select: this.usersService.userSafeSelect } },
+      },
+    };
+  }
+
   getMessages() {
     return this.prisma.message.findMany({
-      include: {
-        user: {
-          select: this.usersService.userSafeSelect,
-        },
-      },
+      include: this.msgInclude,
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -23,7 +29,6 @@ export class MessagesService {
   async createMessage(userId: string, content: string) {
     const usr = await this.usersService.findPublicById(userId);
 
-    // Adrien: check simple pour eviter un 500 Prisma
     if (!usr) {
       throw new NotFoundException('user introuvable');
     }
@@ -32,11 +37,7 @@ export class MessagesService {
 
     return this.prisma.message.create({
       data: { userId: usr.id, content: messageTxt },
-      include: {
-        user: {
-          select: this.usersService.userSafeSelect,
-        },
-      },
+      include: this.msgInclude,
     });
   }
 
@@ -44,14 +45,76 @@ export class MessagesService {
     const msgs = await this.prisma.message.findMany({
       take: limit,
       orderBy: { createdAt: 'desc' },
-      include: {
-        user: {
-          select: this.usersService.userSafeSelect,
+      include: this.msgInclude,
+    });
+
+    return msgs.reverse();
+  }
+
+  async addReaction(messageId: string, userId: string, emoji: string) {
+    const emojiClean = emoji.trim();
+
+    if (!emojiClean || emojiClean.length > 20) {
+      throw new BadRequestException('emoji invalide');
+    }
+
+    const msg = await this.prisma.message.findUnique({ where: { id: messageId } });
+
+    if (!msg) {
+      throw new NotFoundException('message introuvable');
+    }
+
+    const usr = await this.usersService.findPublicById(userId);
+
+    if (!usr) {
+      throw new NotFoundException('user introuvable');
+    }
+
+    const existing = await this.prisma.reaction.findUnique({
+      where: {
+        messageId_userId_emoji: {
+          messageId,
+          userId,
+          emoji: emojiClean,
         },
       },
     });
 
-    // Adrien: le front c'est plus simple quand c'est trie ancien -> recent
-    return msgs.reverse();
+    if (existing) {
+      return { reaction: existing, alreadyThere: true };
+    }
+
+    const reaction = await this.prisma.reaction.create({
+      data: { messageId, userId, emoji: emojiClean },
+      include: { user: { select: this.usersService.userSafeSelect } },
+    });
+
+    return { reaction, alreadyThere: false };
+  }
+
+  async removeReaction(messageId: string, userId: string, emoji: string) {
+    const emojiClean = emoji.trim();
+
+    if (!emojiClean) {
+      throw new BadRequestException('emoji invalide');
+    }
+
+    const existing = await this.prisma.reaction.findUnique({
+      where: {
+        messageId_userId_emoji: {
+          messageId,
+          userId,
+          emoji: emojiClean,
+        },
+      },
+    });
+
+    if (!existing) {
+      return { removed: false, reactionId: null };
+    }
+
+    await this.prisma.reaction.delete({ where: { id: existing.id } });
+
+    return { removed: true, reactionId: existing.id };
   }
 }

@@ -1,25 +1,9 @@
-:root {
-  --text: #0f2530;
-  --muted: #4f6770;
-  --card-bg: #ffffffe6;
-  --card-border: #b4d0d7;
-  --field-bg: #f7fbfc;
-  --field-border: #c4d8de;
-  --button-bg: #0f5d76;
-  --button-text: #f4fcff;
-  --focus: #0f9ac1;
-  --mono: 'IBM Plex Mono', 'Cascadia Mono', 'Courier New', monospace;
-  --sans: 'Space Grotesk', 'Trebuchet MS', 'Segoe UI', sans-serif;
-}
-
-* {
-  box-sizing: border-box;
-}
+@import "tailwindcss";
 
 body {
   margin: 0;
-  color: var(--text);
-  font-family: var(--sans);
+  color: #0f2530;
+  font-family: 'Space Grotesk', 'Trebuchet MS', 'Segoe UI', sans-serif;
   background:
     radial-gradient(circle at 20% 10%, #b9ebff 0%, transparent 35%),
     radial-gradient(circle at 80% 0%, #ffe0be 0%, transparent 38%),
@@ -28,10 +12,4 @@ body {
 
 #root {
   min-height: 100dvh;
-}
-
-h1 {
-  margin: 0;
-  font-size: clamp(1.4rem, 2.2vw, 2rem);
-  line-height: 1.1;
 }

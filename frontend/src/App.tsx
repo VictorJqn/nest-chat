@@ -1,6 +1,5 @@
 import { startTransition, useEffect, useRef, useState, type FormEvent } from 'react'
 import { io, type Socket } from 'socket.io-client'
-import './App.css'
 
 type ApiUser = {
   id: string
@@ -11,12 +10,22 @@ type ApiUser = {
   updatedAt: string
 }
 
+type ApiReaction = {
+  id: string
+  messageId: string
+  userId: string
+  emoji: string
+  createdAt: string
+  user?: ApiUser
+}
+
 type ApiMessage = {
   id: string
   content: string
   createdAt: string
   userId: string
   user: ApiUser
+  reactions?: ApiReaction[]
 }
 
 type LoginResponse = {
@@ -24,21 +33,26 @@ type LoginResponse = {
   user: ApiUser
 }
 
-type LogType = 'info' | 'error' | 'event'
-
-type LogItem = {
-  id: number
-  type: LogType
-  text: string
-  time: string
+type TypingUser = {
+  id: string
+  name: string
 }
 
-async function apiRequest<T>(
-  apiBase: string,
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
-  const response = await fetch(`${apiBase}${path}`, {
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
+const TYPING_IDLE_MS = 1800
+const EMOJI_CHOICES = ['👍', '❤️', '😂', '🎉', '😮', '😢']
+
+const cardCls =
+  'rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-md'
+const inputCls =
+  'w-full rounded-[10px] border border-slate-300 bg-slate-50 px-3 py-2.5 text-slate-900 outline-none focus-visible:outline-2 focus-visible:outline-sky-500'
+const btnCls =
+  'cursor-pointer rounded-[10px] border border-transparent bg-teal-800 px-3 py-2.5 text-teal-50 transition hover:-translate-y-px hover:shadow-md disabled:cursor-not-allowed disabled:opacity-60'
+const h2Cls = 'mb-3 text-[1.06rem] font-semibold'
+const smallCls = 'text-[0.86rem] text-slate-500'
+
+async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -65,219 +79,542 @@ async function apiRequest<T>(
   return json as T
 }
 
-function formatClock() {
-  return new Date().toLocaleTimeString('fr-FR')
+function formatTypingText(list: TypingUser[], myId: string | undefined) {
+  const others = myId ? list.filter((x) => x.id !== myId) : list
+
+  if (others.length === 0) {
+    return ''
+  }
+
+  if (others.length === 1) {
+    return `${others[0].name} est en train d'écrire…`
+  }
+
+  if (others.length === 2) {
+    return `${others[0].name} et ${others[1].name} sont en train d'écrire…`
+  }
+
+  const firstTwo = `${others[0].name}, ${others[1].name}`
+  const restCount = others.length - 2
+
+  return `${firstTwo} et ${restCount} autre${restCount > 1 ? 's' : ''} sont en train d'écrire…`
+}
+
+function groupReactions(reactions: ApiReaction[] | undefined) {
+  const map = new Map<string, ApiReaction[]>()
+
+  for (const r of reactions ?? []) {
+    const arr = map.get(r.emoji)
+
+    if (arr) {
+      arr.push(r)
+    } else {
+      map.set(r.emoji, [r])
+    }
+  }
+
+  return [...map.entries()].map(([emoji, list]) => ({ emoji, list }))
+}
+
+function reactionLabel(list: ApiReaction[]) {
+  return list.map((r) => r.user?.name || r.user?.email || 'utilisateur').join(', ')
+}
+
+function AuthScreen({
+  onAuthed,
+  error,
+  setError,
+}: {
+  onAuthed: (user: ApiUser, token?: string) => void
+  error: string
+  setError: (msg: string) => void
+}) {
+  const [mode, setMode] = useState<'login' | 'register'>('login')
+
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [name, setName] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    setLoading(true)
+
+    try {
+      if (mode === 'register') {
+        const user = await apiRequest<ApiUser>('/auth/register', {
+          method: 'POST',
+          body: JSON.stringify({
+            email,
+            name: name || undefined,
+            password,
+          }),
+        })
+        onAuthed(user)
+      } else {
+        const result = await apiRequest<LoginResponse>('/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ email, password }),
+        })
+        onAuthed(result.user, result.token)
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="flex min-h-dvh items-center justify-center px-5">
+      <article className={`${cardCls} w-full max-w-md`}>
+        <h2 className={h2Cls}>{mode === 'login' ? 'Connexion' : 'Inscription'}</h2>
+
+        <form className="grid gap-2" onSubmit={onSubmit}>
+          <input
+            className={inputCls}
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="email"
+            type="email"
+            required
+          />
+
+          {mode === 'register' && (
+            <input
+              className={inputCls}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="nom (optionnel)"
+            />
+          )}
+
+          <input
+            className={inputCls}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="mot de passe"
+            type="password"
+            minLength={mode === 'register' ? 6 : undefined}
+            required
+          />
+
+          {error && <p className="text-sm text-red-700">{error}</p>}
+
+          <button className={btnCls} type="submit" disabled={loading}>
+            {loading ? '...' : mode === 'login' ? 'Se connecter' : "S'inscrire"}
+          </button>
+        </form>
+
+        <p className="mt-3 text-center text-sm text-slate-500">
+          {mode === 'login' ? 'Pas de compte ?' : 'Déjà un compte ?'}{' '}
+          <button
+            type="button"
+            className="cursor-pointer text-teal-800 underline"
+            onClick={() => {
+              setError('')
+              setMode(mode === 'login' ? 'register' : 'login')
+            }}
+          >
+            {mode === 'login' ? "S'inscrire" : 'Se connecter'}
+          </button>
+        </p>
+      </article>
+    </div>
+  )
+}
+
+function ProfileCard({
+  user,
+  onSaved,
+  onLogout,
+}: {
+  user: ApiUser
+  onSaved: (u: ApiUser) => void
+  onLogout: () => void
+}) {
+  const [profileName, setProfileName] = useState(user.name ?? '')
+  const [profileColor, setProfileColor] = useState(user.color)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setProfileName(user.name ?? '')
+    setProfileColor(user.color)
+  }, [user.id, user.name, user.color])
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    setSaving(true)
+
+    try {
+      const u = await apiRequest<ApiUser>(`/users/${user.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: profileName.trim() === '' ? null : profileName,
+          color: profileColor,
+        }),
+      })
+      onSaved(u)
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <article className={cardCls}>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h2 className={h2Cls + ' mb-0'}>Mon profil</h2>
+        <button
+          type="button"
+          onClick={onLogout}
+          className="cursor-pointer text-sm text-slate-500 underline hover:text-slate-700"
+        >
+          déconnexion
+        </button>
+      </div>
+
+      <p className={`${smallCls} mb-3`}>{user.email}</p>
+
+      <form className="grid gap-3" onSubmit={onSubmit}>
+        <label className="grid gap-1.5">
+          <span className={smallCls}>Nom affiché</span>
+          <input
+            className={inputCls}
+            value={profileName}
+            onChange={(e) => setProfileName(e.target.value)}
+            placeholder="ton nom affiché"
+            maxLength={40}
+          />
+        </label>
+
+        <label className="flex flex-wrap items-center gap-2.5">
+          <span className={smallCls}>Couleur</span>
+          <input
+            type="color"
+            className="h-9 w-12 cursor-pointer rounded border border-slate-300 bg-slate-50 p-0.5"
+            value={profileColor}
+            onChange={(e) => setProfileColor(e.target.value)}
+          />
+          <span
+            className="h-[22px] w-[22px] rounded-full border border-slate-300"
+            style={{ background: profileColor }}
+          />
+          <code className={`${smallCls} font-mono`}>{profileColor}</code>
+        </label>
+
+        <p className={smallCls}>
+          Aperçu:{' '}
+          <strong style={{ color: profileColor }}>
+            {profileName.trim() || user.email}
+          </strong>
+        </p>
+
+        {error && <p className="text-sm text-red-700">{error}</p>}
+
+        <button className={btnCls} type="submit" disabled={saving}>
+          {saving ? 'Enregistrement...' : 'Enregistrer'}
+        </button>
+      </form>
+    </article>
+  )
+}
+
+function ChatPanel({
+  authUser,
+  messages,
+  typingList,
+  messageInput,
+  onMessageInput,
+  onSend,
+  onToggleReaction,
+}: {
+  authUser: ApiUser
+  messages: ApiMessage[]
+  typingList: TypingUser[]
+  messageInput: string
+  onMessageInput: (v: string) => void
+  onSend: (e: FormEvent<HTMLFormElement>) => void
+  onToggleReaction: (m: ApiMessage, emoji: string) => void
+}) {
+  const myId = authUser.id
+
+  return (
+    <article className={`${cardCls} flex h-full flex-col`}>
+      <h2 className={h2Cls}>Chat général</h2>
+
+      <ul className="m-0 grid flex-1 list-none gap-2 overflow-auto p-0">
+        {messages.map((message) => {
+          const groups = groupReactions(message.reactions)
+
+          return (
+            <li
+              key={message.id}
+              className="group rounded-[10px] border border-slate-300 bg-slate-50 p-2.5"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <strong style={{ color: message.user.color || '#4f8cff' }}>
+                    {message.user.name || message.user.email}
+                  </strong>
+                  <small className="ml-1 text-slate-500">
+                    {new Date(message.createdAt).toLocaleTimeString('fr-FR')}
+                  </small>
+                </div>
+
+                <div className="flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
+                  {EMOJI_CHOICES.map((emj) => (
+                    <button
+                      key={emj}
+                      type="button"
+                      className="cursor-pointer rounded-md border border-transparent bg-white px-1.5 py-0.5 text-sm hover:border-slate-300"
+                      onClick={() => onToggleReaction(message, emj)}
+                      title={`Réagir avec ${emj}`}
+                    >
+                      {emj}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <p className="mt-1">{message.content}</p>
+
+              {groups.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {groups.map((g) => {
+                    const iReacted = g.list.some((r) => r.userId === myId)
+
+                    return (
+                      <div key={g.emoji} className="relative group/pill">
+                        <button
+                          type="button"
+                          onClick={() => onToggleReaction(message, g.emoji)}
+                          className={`flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition ${
+                            iReacted
+                              ? 'border-sky-500 bg-sky-100 text-sky-900'
+                              : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          <span>{g.emoji}</span>
+                          <span>{g.list.length}</span>
+                        </button>
+
+                        <span className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 hidden -translate-x-1/2 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-xs text-white shadow group-hover/pill:block">
+                          {reactionLabel(g.list)}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </li>
+          )
+        })}
+
+        {messages.length === 0 && (
+          <li className={smallCls}>Aucun message pour le moment.</li>
+        )}
+      </ul>
+
+      <p className={`${smallCls} -mt-1 mb-2 min-h-[1.2em] italic`}>
+        {formatTypingText(typingList, authUser.id)}
+      </p>
+
+      <form
+        className="flex items-center gap-2 max-md:flex-wrap"
+        onSubmit={onSend}
+      >
+        <input
+          className={inputCls}
+          value={messageInput}
+          onChange={(e) => onMessageInput(e.target.value)}
+          placeholder="Écris ton message..."
+        />
+        <button className={btnCls} type="submit">
+          Envoyer
+        </button>
+      </form>
+    </article>
+  )
 }
 
 function App() {
-  const [apiBase, setApiBase] = useState('http://localhost:3000')
-
-  const [registerEmail, setRegisterEmail] = useState('')
-  const [registerName, setRegisterName] = useState('')
-  const [registerPassword, setRegisterPassword] = useState('')
-
-  const [loginEmail, setLoginEmail] = useState('')
-  const [loginPassword, setLoginPassword] = useState('')
-
   const [authUser, setAuthUser] = useState<ApiUser | null>(null)
-  const [token, setToken] = useState('')
+  const [authError, setAuthError] = useState('')
 
-  const [users, setUsers] = useState<ApiUser[]>([])
-  const [messagesHttp, setMessagesHttp] = useState<ApiMessage[]>([])
-  const [messagesWs, setMessagesWs] = useState<ApiMessage[]>([])
-
-  const [joinUserId, setJoinUserId] = useState('')
+  const [messages, setMessages] = useState<ApiMessage[]>([])
   const [messageInput, setMessageInput] = useState('')
-
-  const [profileName, setProfileName] = useState('')
-  const [profileColor, setProfileColor] = useState('#4f8cff')
-  const [savingProfile, setSavingProfile] = useState(false)
-
-  const [socketConnected, setSocketConnected] = useState(false)
-  const [inGeneralRoom, setInGeneralRoom] = useState(false)
-
-  const [logs, setLogs] = useState<LogItem[]>([])
+  const [typingList, setTypingList] = useState<TypingUser[]>([])
 
   const socketRef = useRef<Socket | null>(null)
-  const logIdRef = useRef(0)
+  const typingTimerRef = useRef<number | null>(null)
+  const iAmTypingRef = useRef(false)
 
-  function addLog(type: LogType, text: string) {
-    const nextId = logIdRef.current + 1
-    logIdRef.current = nextId
-
-    setLogs((prev) => {
-      const next = [...prev, { id: nextId, type, text, time: formatClock() }]
-      return next.slice(-60)
-    })
-  }
-
-  async function handleRegister(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    try {
-      const user = await apiRequest<ApiUser>(apiBase, '/auth/register', {
-        method: 'POST',
-        body: JSON.stringify({
-          email: registerEmail,
-          name: registerName || undefined,
-          password: registerPassword,
-        }),
-      })
-
-      setAuthUser(user)
-      setJoinUserId(user.id)
-      setProfileName(user.name ?? '')
-      setProfileColor(user.color ?? '#4f8cff')
-      addLog('event', `register OK: ${user.email}`)
-    } catch (error) {
-      addLog('error', `register: ${(error as Error).message}`)
+  function cleanupTyping() {
+    if (typingTimerRef.current !== null) {
+      window.clearTimeout(typingTimerRef.current)
+      typingTimerRef.current = null
     }
+
+    iAmTypingRef.current = false
   }
 
-  async function handleLogin(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    try {
-      const result = await apiRequest<LoginResponse>(apiBase, '/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({
-          email: loginEmail,
-          password: loginPassword,
-        }),
-      })
-
-      setToken(result.token)
-      setAuthUser(result.user)
-      setJoinUserId(result.user.id)
-      setProfileName(result.user.name ?? '')
-      setProfileColor(result.user.color ?? '#4f8cff')
-      addLog('event', `login OK: ${result.user.email}`)
-    } catch (error) {
-      addLog('error', `login: ${(error as Error).message}`)
+  useEffect(() => {
+    if (!authUser) {
+      return
     }
-  }
 
-  async function loadUsers() {
-    try {
-      const result = await apiRequest<ApiUser[]>(apiBase, '/users')
-      setUsers(result)
-      addLog('info', `${result.length} user(s) chargés`)
-    } catch (error) {
-      addLog('error', `users: ${(error as Error).message}`)
-    }
-  }
-
-  async function loadMessagesHttp() {
-    try {
-      const result = await apiRequest<ApiMessage[]>(apiBase, '/messages')
-      setMessagesHttp(result)
-      addLog('info', `${result.length} message(s) HTTP chargés`)
-    } catch (error) {
-      addLog('error', `messages: ${(error as Error).message}`)
-    }
-  }
-
-  function connectSocket() {
-    socketRef.current?.disconnect()
-    setInGeneralRoom(false)
-
-    addLog('info', `connexion websocket vers ${apiBase}`)
-
-    const socket = io(apiBase, {
+    const socket = io(API_BASE, {
       transports: ['websocket'],
     })
 
     socketRef.current = socket
 
     socket.on('connect', () => {
-      setSocketConnected(true)
-      addLog('event', `socket connecté (${socket.id})`)
+      socket.emit('general:join', { userId: authUser.id })
     })
 
-    socket.on('disconnect', (reason) => {
-      setSocketConnected(false)
-      setInGeneralRoom(false)
-      addLog('info', `socket déconnecté (${reason})`)
-    })
-
-    socket.on('connect_error', (error) => {
-      addLog('error', `socket: ${error.message}`)
-    })
-
-    socket.on('exception', (payload) => {
-      const msg =
-        payload &&
-        typeof payload === 'object' &&
-        'message' in payload &&
-        typeof payload.message === 'string'
-          ? payload.message
-          : 'erreur websocket'
-
-      setInGeneralRoom(false)
-      addLog('error', `ws exception: ${msg}`)
+    socket.on('disconnect', () => {
+      setTypingList([])
+      cleanupTyping()
     })
 
     socket.on('general:init', (items: ApiMessage[]) => {
       startTransition(() => {
-        setMessagesWs(items)
+        setMessages(items)
       })
-
-      setInGeneralRoom(true)
-      addLog('event', `join general OK (${items.length} message(s))`)
     })
 
     socket.on('general:new_message', (message: ApiMessage) => {
       startTransition(() => {
-        setMessagesWs((prev) => [...prev, message])
+        setMessages((prev) => [...prev, message])
       })
-
-      addLog('event', `new message: ${message.user.email}`)
     })
 
-    socket.on('general:user_joined', (payload: { name?: string }) => {
-      addLog('event', `${payload.name || 'un user'} a rejoint`)
+    socket.on('general:user_left', (payload: { userId?: string }) => {
+      if (payload.userId) {
+        setTypingList((prev) => prev.filter((x) => x.id !== payload.userId))
+      }
     })
 
-    socket.on('general:user_left', (payload: { name?: string }) => {
-      addLog('info', `${payload.name || 'un user'} a quitté`)
+    socket.on(
+      'general:typing_start',
+      (payload: { userId: string; name: string }) => {
+        setTypingList((prev) => {
+          if (prev.some((x) => x.id === payload.userId)) {
+            return prev
+          }
+
+          return [...prev, { id: payload.userId, name: payload.name }]
+        })
+      },
+    )
+
+    socket.on('general:typing_stop', (payload: { userId: string }) => {
+      setTypingList((prev) => prev.filter((x) => x.id !== payload.userId))
     })
+
+    socket.on(
+      'general:reaction_added',
+      (payload: { messageId: string; reaction: ApiReaction }) => {
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== payload.messageId) {
+              return m
+            }
+
+            const already = (m.reactions ?? []).some(
+              (r) => r.id === payload.reaction.id,
+            )
+
+            if (already) {
+              return m
+            }
+
+            return { ...m, reactions: [...(m.reactions ?? []), payload.reaction] }
+          }),
+        )
+      },
+    )
+
+    socket.on(
+      'general:reaction_removed',
+      (payload: { messageId: string; userId: string; emoji: string }) => {
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== payload.messageId) {
+              return m
+            }
+
+            return {
+              ...m,
+              reactions: (m.reactions ?? []).filter(
+                (r) => !(r.userId === payload.userId && r.emoji === payload.emoji),
+              ),
+            }
+          }),
+        )
+      },
+    )
 
     socket.on('general:user_updated', (u: ApiUser) => {
-      setUsers((prev) => prev.map((x) => (x.id === u.id ? u : x)))
-      setMessagesWs((prev) =>
+      setMessages((prev) =>
         prev.map((m) => (m.user.id === u.id ? { ...m, user: u } : m)),
       )
-      setMessagesHttp((prev) =>
-        prev.map((m) => (m.user.id === u.id ? { ...m, user: u } : m)),
-      )
-
-      addLog('event', `${u.name || u.email} a mis a jour son profil`)
     })
+
+    return () => {
+      cleanupTyping()
+      socket.disconnect()
+      socketRef.current = null
+    }
+  }, [authUser])
+
+  function stopTypingNow() {
+    if (typingTimerRef.current !== null) {
+      window.clearTimeout(typingTimerRef.current)
+      typingTimerRef.current = null
+    }
+
+    if (!iAmTypingRef.current) {
+      return
+    }
+
+    iAmTypingRef.current = false
+    socketRef.current?.emit('general:typing_stop')
   }
 
-  function disconnectSocket() {
-    socketRef.current?.disconnect()
-    socketRef.current = null
-    setSocketConnected(false)
-    setInGeneralRoom(false)
-  }
+  function handleMessageInput(value: string) {
+    setMessageInput(value)
 
-  function joinGeneral() {
     const socket = socketRef.current
-    const currentUserId = joinUserId.trim() || authUser?.id || ''
 
     if (!socket || !socket.connected) {
-      addLog('error', 'socket non connecté')
       return
     }
 
-    if (!currentUserId) {
-      addLog('error', 'userId manquant pour join')
+    if (value.trim() === '') {
+      stopTypingNow()
       return
     }
 
-    socket.emit('general:join', { userId: currentUserId })
-    addLog('info', `join demandé pour ${currentUserId}`)
+    if (!iAmTypingRef.current) {
+      iAmTypingRef.current = true
+      socket.emit('general:typing_start')
+    }
+
+    if (typingTimerRef.current !== null) {
+      window.clearTimeout(typingTimerRef.current)
+    }
+
+    typingTimerRef.current = window.setTimeout(() => {
+      typingTimerRef.current = null
+      stopTypingNow()
+    }, TYPING_IDLE_MS)
   }
 
   function sendGeneralMessage(event: FormEvent<HTMLFormElement>) {
@@ -285,300 +622,71 @@ function App() {
 
     const socket = socketRef.current
     const content = messageInput.trim()
-    const userId = joinUserId.trim() || authUser?.id || ''
 
-    if (!socket || !socket.connected) {
-      addLog('error', 'socket non connecté')
+    if (!socket || !socket.connected || !authUser) {
       return
     }
 
     if (!content) {
-      addLog('error', 'message vide')
       return
     }
 
-    socket.emit('general:send', { content, userId })
+    socket.emit('general:send', { content, userId: authUser.id })
+    setMessageInput('')
+
+    cleanupTyping()
+  }
+
+  function toggleReaction(message: ApiMessage, emoji: string) {
+    const socket = socketRef.current
+
+    if (!socket || !socket.connected || !authUser) {
+      return
+    }
+
+    const mine = (message.reactions ?? []).some(
+      (r) => r.userId === authUser.id && r.emoji === emoji,
+    )
+
+    if (mine) {
+      socket.emit('general:reaction_remove', { messageId: message.id, emoji })
+    } else {
+      socket.emit('general:reaction_add', { messageId: message.id, emoji })
+    }
+  }
+
+  function onLogout() {
+    setAuthUser(null)
+    setMessages([])
+    setTypingList([])
     setMessageInput('')
   }
 
-  async function saveProfile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    if (!authUser) {
-      addLog('error', 'connecte toi avant de modifier ton profil')
-      return
-    }
-
-    setSavingProfile(true)
-
-    try {
-      const u = await apiRequest<ApiUser>(apiBase, `/users/${authUser.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          name: profileName.trim() === '' ? null : profileName,
-          color: profileColor,
-        }),
-      })
-
-      setAuthUser(u)
-      setProfileName(u.name ?? '')
-      setProfileColor(u.color)
-
-      setUsers((prev) => prev.map((x) => (x.id === u.id ? u : x)))
-      setMessagesWs((prev) =>
-        prev.map((m) => (m.user.id === u.id ? { ...m, user: u } : m)),
-      )
-      setMessagesHttp((prev) =>
-        prev.map((m) => (m.user.id === u.id ? { ...m, user: u } : m)),
-      )
-
-      addLog('event', `profil MAJ ok (${u.name ?? u.email})`)
-    } catch (error) {
-      addLog('error', `profil: ${(error as Error).message}`)
-    } finally {
-      setSavingProfile(false)
-    }
+  if (!authUser) {
+    return (
+      <AuthScreen
+        onAuthed={(u) => {
+          setAuthError('')
+          setAuthUser(u)
+        }}
+        error={authError}
+        setError={setAuthError}
+      />
+    )
   }
 
-  useEffect(() => {
-    return () => {
-      socketRef.current?.disconnect()
-      socketRef.current = null
-    }
-  }, [])
-
   return (
-    <main className="page">
-      <header className="top">
-        <div>
-          <p className="eyebrow">Nest Chat Test Front</p>
-          <h1>Auth + General Chat (Websocket)</h1>
-        </div>
-        <label className="api">
-          <span>API Base URL</span>
-          <input
-            value={apiBase}
-            onChange={(event) => setApiBase(event.target.value)}
-            placeholder="http://localhost:3000"
-          />
-        </label>
-      </header>
-
-      <section className="layout">
-        <article className="card">
-          <h2>Authentication</h2>
-
-          <form className="stack" onSubmit={handleRegister}>
-            <h3>Register</h3>
-            <input
-              value={registerEmail}
-              onChange={(event) => setRegisterEmail(event.target.value)}
-              placeholder="email"
-              type="email"
-              required
-            />
-            <input
-              value={registerName}
-              onChange={(event) => setRegisterName(event.target.value)}
-              placeholder="name (optionnel)"
-            />
-            <input
-              value={registerPassword}
-              onChange={(event) => setRegisterPassword(event.target.value)}
-              placeholder="password"
-              type="password"
-              minLength={6}
-              required
-            />
-            <button type="submit">Register</button>
-          </form>
-
-          <form className="stack" onSubmit={handleLogin}>
-            <h3>Login</h3>
-            <input
-              value={loginEmail}
-              onChange={(event) => setLoginEmail(event.target.value)}
-              placeholder="email"
-              type="email"
-              required
-            />
-            <input
-              value={loginPassword}
-              onChange={(event) => setLoginPassword(event.target.value)}
-              placeholder="password"
-              type="password"
-              required
-            />
-            <button type="submit">Login</button>
-          </form>
-
-          <div className="session">
-            <h3>Session</h3>
-            {authUser ? (
-              <p>
-                connecté: <strong>{authUser.email}</strong>
-              </p>
-            ) : (
-              <p>pas connecté</p>
-            )}
-            <p className="small">token: {token ? 'ok' : 'none'}</p>
-          </div>
-        </article>
-
-        <article className="card">
-          <h2>Profil</h2>
-          {authUser ? (
-            <form className="stack" onSubmit={saveProfile}>
-              <label className="stack">
-                <span className="small">Username</span>
-                <input
-                  value={profileName}
-                  onChange={(event) => setProfileName(event.target.value)}
-                  placeholder="ton nom affiché"
-                  maxLength={40}
-                />
-              </label>
-
-              <label className="color-row">
-                <span className="small">Couleur</span>
-                <input
-                  type="color"
-                  value={profileColor}
-                  onChange={(event) => setProfileColor(event.target.value)}
-                />
-                <span className="swatch" style={{ background: profileColor }} />
-                <code className="small">{profileColor}</code>
-              </label>
-
-              <p className="small">
-                Aperçu:{' '}
-                <strong style={{ color: profileColor }}>
-                  {profileName.trim() || authUser.email}
-                </strong>
-              </p>
-
-              <button type="submit" disabled={savingProfile}>
-                {savingProfile ? 'Enregistrement...' : 'Enregistrer'}
-              </button>
-            </form>
-          ) : (
-            <p className="small">Connecte-toi pour modifier ton profil.</p>
-          )}
-        </article>
-
-        <article className="card">
-          <h2>HTTP Quick Checks</h2>
-          <div className="row">
-            <button onClick={loadUsers} type="button">
-              Load users
-            </button>
-            <button onClick={loadMessagesHttp} type="button">
-              Load messages
-            </button>
-          </div>
-          <div className="split">
-            <div>
-              <h3>Users ({users.length})</h3>
-              <ul className="list">
-                {users.map((user) => (
-                  <li key={user.id}>
-                    <code>{user.id}</code>
-                    <span>
-                      <span
-                        className="dot"
-                        style={{ background: user.color || '#4f8cff' }}
-                      />
-                      <strong style={{ color: user.color || '#4f8cff' }}>
-                        {user.name || user.email}
-                      </strong>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div>
-              <h3>HTTP messages ({messagesHttp.length})</h3>
-              <ul className="list">
-                {messagesHttp.map((message) => (
-                  <li key={message.id}>
-                    <span style={{ color: message.user.color || '#4f8cff' }}>
-                      <strong>{message.user.name || message.user.email}</strong>
-                    </span>
-                    <p>{message.content}</p>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </article>
-
-        <article className="card wide">
-          <h2>General Chat (Websocket)</h2>
-          <div className="row">
-            <button onClick={connectSocket} type="button">
-              Connect socket
-            </button>
-            <button onClick={disconnectSocket} type="button">
-              Disconnect
-            </button>
-            <span className={`status ${socketConnected ? 'on' : 'off'}`}>
-              {socketConnected ? 'connected' : 'offline'}
-            </span>
-          </div>
-
-          <div className="row">
-            <input
-              value={joinUserId}
-              onChange={(event) => setJoinUserId(event.target.value)}
-              placeholder="userId pour join (auto rempli après login)"
-            />
-            <button onClick={joinGeneral} type="button">
-              Join general
-            </button>
-            <span className={`status ${inGeneralRoom ? 'on' : 'off'}`}>
-              {inGeneralRoom ? 'in room' : 'not in room'}
-            </span>
-          </div>
-
-          <form className="row" onSubmit={sendGeneralMessage}>
-            <input
-              value={messageInput}
-              onChange={(event) => setMessageInput(event.target.value)}
-              placeholder="ton message ici"
-            />
-            <button type="submit">Send</button>
-          </form>
-
-          <h3>Live messages ({messagesWs.length})</h3>
-          <ul className="chat">
-            {messagesWs.map((message) => (
-              <li key={message.id}>
-                <div>
-                  <strong style={{ color: message.user.color || '#4f8cff' }}>
-                    {message.user.name || message.user.email}
-                  </strong>
-                  <small>
-                    {' '}
-                    {new Date(message.createdAt).toLocaleTimeString('fr-FR')}
-                  </small>
-                </div>
-                <p>{message.content}</p>
-              </li>
-            ))}
-          </ul>
-        </article>
-
-        <article className="card wide">
-          <h2>Logs</h2>
-          <ul className="logs">
-            {logs.map((item) => (
-              <li key={item.id} className={item.type}>
-                <span>[{item.time}]</span> {item.text}
-              </li>
-            ))}
-          </ul>
-        </article>
-      </section>
+    <main className="mx-auto box-border grid min-h-dvh w-full max-w-[1200px] gap-4 px-5 pt-8 pb-10 md:grid-cols-[320px_1fr]">
+      <ProfileCard user={authUser} onSaved={setAuthUser} onLogout={onLogout} />
+      <ChatPanel
+        authUser={authUser}
+        messages={messages}
+        typingList={typingList}
+        messageInput={messageInput}
+        onMessageInput={handleMessageInput}
+        onSend={sendGeneralMessage}
+        onToggleReaction={toggleReaction}
+      />
     </main>
   )
 }
