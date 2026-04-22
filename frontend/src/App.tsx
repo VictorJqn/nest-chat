@@ -6,6 +6,7 @@ type ApiUser = {
   id: string
   email: string
   name: string | null
+  color: string
   createdAt: string
   updatedAt: string
 }
@@ -88,6 +89,10 @@ function App() {
   const [joinUserId, setJoinUserId] = useState('')
   const [messageInput, setMessageInput] = useState('')
 
+  const [profileName, setProfileName] = useState('')
+  const [profileColor, setProfileColor] = useState('#4f8cff')
+  const [savingProfile, setSavingProfile] = useState(false)
+
   const [socketConnected, setSocketConnected] = useState(false)
   const [inGeneralRoom, setInGeneralRoom] = useState(false)
 
@@ -121,6 +126,8 @@ function App() {
 
       setAuthUser(user)
       setJoinUserId(user.id)
+      setProfileName(user.name ?? '')
+      setProfileColor(user.color ?? '#4f8cff')
       addLog('event', `register OK: ${user.email}`)
     } catch (error) {
       addLog('error', `register: ${(error as Error).message}`)
@@ -142,6 +149,8 @@ function App() {
       setToken(result.token)
       setAuthUser(result.user)
       setJoinUserId(result.user.id)
+      setProfileName(result.user.name ?? '')
+      setProfileColor(result.user.color ?? '#4f8cff')
       addLog('event', `login OK: ${result.user.email}`)
     } catch (error) {
       addLog('error', `login: ${(error as Error).message}`)
@@ -232,6 +241,18 @@ function App() {
     socket.on('general:user_left', (payload: { name?: string }) => {
       addLog('info', `${payload.name || 'un user'} a quitté`)
     })
+
+    socket.on('general:user_updated', (u: ApiUser) => {
+      setUsers((prev) => prev.map((x) => (x.id === u.id ? u : x)))
+      setMessagesWs((prev) =>
+        prev.map((m) => (m.user.id === u.id ? { ...m, user: u } : m)),
+      )
+      setMessagesHttp((prev) =>
+        prev.map((m) => (m.user.id === u.id ? { ...m, user: u } : m)),
+      )
+
+      addLog('event', `${u.name || u.email} a mis a jour son profil`)
+    })
   }
 
   function disconnectSocket() {
@@ -278,6 +299,45 @@ function App() {
 
     socket.emit('general:send', { content, userId })
     setMessageInput('')
+  }
+
+  async function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (!authUser) {
+      addLog('error', 'connecte toi avant de modifier ton profil')
+      return
+    }
+
+    setSavingProfile(true)
+
+    try {
+      const u = await apiRequest<ApiUser>(apiBase, `/users/${authUser.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: profileName.trim() === '' ? null : profileName,
+          color: profileColor,
+        }),
+      })
+
+      setAuthUser(u)
+      setProfileName(u.name ?? '')
+      setProfileColor(u.color)
+
+      setUsers((prev) => prev.map((x) => (x.id === u.id ? u : x)))
+      setMessagesWs((prev) =>
+        prev.map((m) => (m.user.id === u.id ? { ...m, user: u } : m)),
+      )
+      setMessagesHttp((prev) =>
+        prev.map((m) => (m.user.id === u.id ? { ...m, user: u } : m)),
+      )
+
+      addLog('event', `profil MAJ ok (${u.name ?? u.email})`)
+    } catch (error) {
+      addLog('error', `profil: ${(error as Error).message}`)
+    } finally {
+      setSavingProfile(false)
+    }
   }
 
   useEffect(() => {
@@ -366,6 +426,47 @@ function App() {
         </article>
 
         <article className="card">
+          <h2>Profil</h2>
+          {authUser ? (
+            <form className="stack" onSubmit={saveProfile}>
+              <label className="stack">
+                <span className="small">Username</span>
+                <input
+                  value={profileName}
+                  onChange={(event) => setProfileName(event.target.value)}
+                  placeholder="ton nom affiché"
+                  maxLength={40}
+                />
+              </label>
+
+              <label className="color-row">
+                <span className="small">Couleur</span>
+                <input
+                  type="color"
+                  value={profileColor}
+                  onChange={(event) => setProfileColor(event.target.value)}
+                />
+                <span className="swatch" style={{ background: profileColor }} />
+                <code className="small">{profileColor}</code>
+              </label>
+
+              <p className="small">
+                Aperçu:{' '}
+                <strong style={{ color: profileColor }}>
+                  {profileName.trim() || authUser.email}
+                </strong>
+              </p>
+
+              <button type="submit" disabled={savingProfile}>
+                {savingProfile ? 'Enregistrement...' : 'Enregistrer'}
+              </button>
+            </form>
+          ) : (
+            <p className="small">Connecte-toi pour modifier ton profil.</p>
+          )}
+        </article>
+
+        <article className="card">
           <h2>HTTP Quick Checks</h2>
           <div className="row">
             <button onClick={loadUsers} type="button">
@@ -382,7 +483,15 @@ function App() {
                 {users.map((user) => (
                   <li key={user.id}>
                     <code>{user.id}</code>
-                    <span>{user.email}</span>
+                    <span>
+                      <span
+                        className="dot"
+                        style={{ background: user.color || '#4f8cff' }}
+                      />
+                      <strong style={{ color: user.color || '#4f8cff' }}>
+                        {user.name || user.email}
+                      </strong>
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -392,7 +501,9 @@ function App() {
               <ul className="list">
                 {messagesHttp.map((message) => (
                   <li key={message.id}>
-                    <span>{message.user.email}</span>
+                    <span style={{ color: message.user.color || '#4f8cff' }}>
+                      <strong>{message.user.name || message.user.email}</strong>
+                    </span>
                     <p>{message.content}</p>
                   </li>
                 ))}
@@ -443,7 +554,9 @@ function App() {
             {messagesWs.map((message) => (
               <li key={message.id}>
                 <div>
-                  <strong>{message.user.name || message.user.email}</strong>
+                  <strong style={{ color: message.user.color || '#4f8cff' }}>
+                    {message.user.name || message.user.email}
+                  </strong>
                   <small>
                     {' '}
                     {new Date(message.createdAt).toLocaleTimeString('fr-FR')}

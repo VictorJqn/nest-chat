@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleInit } from '@nestjs/common';
 import {
   ConnectedSocket,
   MessageBody,
@@ -10,6 +10,7 @@ import {
   WsException,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { AppEvents } from '../events/events.service';
 import { MessagesService } from '../messages/messages.service';
 import { UsersService } from '../users/users.service';
 
@@ -25,7 +26,9 @@ type SendGeneralBody = {
 @WebSocketGateway({
   cors: { origin: '*' },
 })
-export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class ChatGateway
+  implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit
+{
   @WebSocketServer()
   server!: Server;
 
@@ -34,7 +37,14 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(
     private readonly usersService: UsersService,
     private readonly messagesService: MessagesService,
+    private readonly appEvents: AppEvents,
   ) {}
+
+  onModuleInit() {
+    this.appEvents.onUserUpdated((u) => {
+      this.server.to('general').emit('general:user_updated', u);
+    });
+  }
 
   handleConnection(client: Socket) {
     this.logger.log(`socket connected ${client.id}`);

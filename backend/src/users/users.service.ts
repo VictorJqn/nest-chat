@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomBytes, scryptSync } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -8,6 +8,7 @@ export class UsersService {
     id: true,
     email: true,
     name: true,
+    color: true,
     createdAt: true,
     updatedAt: true,
   } as const;
@@ -35,6 +36,7 @@ export class UsersService {
         id: true,
         email: true,
         name: true,
+        color: true,
         createdAt: true,
         updatedAt: true,
         passwordHash: true,
@@ -69,6 +71,7 @@ export class UsersService {
     id: string;
     email: string;
     name: string | null;
+    color: string;
     createdAt: Date;
     updatedAt: Date;
   }) {
@@ -76,9 +79,56 @@ export class UsersService {
       id: user.id,
       email: user.email,
       name: user.name,
+      color: user.color,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
+  }
+
+  async updateProfile(
+    userId: string,
+    data: { name?: string | null; color?: string },
+  ) {
+    const usr = await this.prisma.user.findUnique({ where: { id: userId } });
+
+    if (!usr) {
+      throw new NotFoundException('user introuvable');
+    }
+
+    const dataMaj: { name?: string | null; color?: string } = {};
+
+    if (data.name !== undefined) {
+      const n = data.name?.trim();
+
+      if (!n) {
+        dataMaj.name = null;
+      } else {
+        if (n.length > 40) {
+          throw new BadRequestException('username trop long (max 40)');
+        }
+        dataMaj.name = n;
+      }
+    }
+
+    if (data.color !== undefined) {
+      const c = data.color.trim().toLowerCase();
+
+      if (!/^#[0-9a-f]{6}$/.test(c)) {
+        throw new BadRequestException('color doit etre en #rrggbb');
+      }
+
+      dataMaj.color = c;
+    }
+
+    if (!Object.keys(dataMaj).length) {
+      return this.findPublicById(userId);
+    }
+
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: dataMaj,
+      select: this.userSafeSelect,
+    });
   }
 
   async registerUser(email: string, name: string | undefined, password: string) {

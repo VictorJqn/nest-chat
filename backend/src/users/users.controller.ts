@@ -1,4 +1,13 @@
-import { BadRequestException, Body, Controller, Get, Post } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
+import { AppEvents } from '../events/events.service';
 import { UsersService } from './users.service';
 
 type CreateUserBody = {
@@ -7,9 +16,17 @@ type CreateUserBody = {
   password?: string;
 };
 
+type UpdateUserBody = {
+  name?: string | null;
+  color?: string;
+};
+
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly appEvents: AppEvents,
+  ) {}
 
   @Get()
   getUsers() {
@@ -22,7 +39,6 @@ export class UsersController {
     const name = body.name?.trim();
     const password = body.password?.trim();
 
-    // Adrien: je garde une validation basique ici
     if (!email) {
       throw new BadRequestException('email is required');
     }
@@ -32,5 +48,28 @@ export class UsersController {
     }
 
     return this.usersService.registerUser(email, name || undefined, password);
+  }
+
+  @Patch(':id')
+  async updateUser(@Param('id') userId: string, @Body() body: UpdateUserBody) {
+    if (!userId) {
+      throw new BadRequestException('id is required');
+    }
+
+    const userMaj = await this.usersService.updateProfile(userId, {
+      name: body.name,
+      color: body.color,
+    });
+
+    if (userMaj) {
+      this.appEvents.pushUserUpdated({
+        id: userMaj.id,
+        email: userMaj.email,
+        name: userMaj.name,
+        color: userMaj.color,
+      });
+    }
+
+    return userMaj;
   }
 }
