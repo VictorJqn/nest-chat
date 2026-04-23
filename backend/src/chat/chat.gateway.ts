@@ -12,6 +12,7 @@ import {
 import { Server, Socket } from 'socket.io';
 import { AppEvents } from '../events/events.service';
 import { MessagesService } from '../messages/messages.service';
+import { RoomsService } from '../rooms/rooms.service';
 import { UsersService } from '../users/users.service';
 
 type JoinGeneralBody = {
@@ -28,6 +29,30 @@ type ReactionBody = {
   emoji?: string;
 };
 
+type RoomJoinBody = {
+  roomId?: string;
+  userId?: string;
+};
+
+type RoomSendBody = {
+  roomId?: string;
+  content?: string;
+};
+
+type RoomTypingBody = {
+  roomId?: string;
+};
+
+type RoomReactionBody = {
+  roomId?: string;
+  messageId?: string;
+  emoji?: string;
+};
+
+function roomChannel(roomId: string) {
+  return `room:${roomId}`;
+}
+
 @WebSocketGateway({
   cors: { origin: '*' },
 })
@@ -42,17 +67,20 @@ export class ChatGateway
   constructor(
     private readonly usersService: UsersService,
     private readonly messagesService: MessagesService,
+    private readonly roomsService: RoomsService,
     private readonly appEvents: AppEvents,
   ) {}
 
   onModuleInit() {
     this.appEvents.onUserUpdated((u) => {
+      this.server.emit('user:updated', u);
       this.server.to('general').emit('general:user_updated', u);
     });
   }
 
   handleConnection(client: Socket) {
     this.logger.log(`socket connected ${client.id}`);
+    client.data.typingRooms = new Set<string>();
   }
 
   handleDisconnect(client: Socket) {
@@ -64,6 +92,15 @@ export class ChatGateway
 
     if (client.data.isTyping) {
       client.to('general').emit('general:typing_stop', {
+        userId: client.data.userId,
+      });
+    }
+
+    const typingRooms: Set<string> = client.data.typingRooms ?? new Set();
+
+    for (const rid of typingRooms) {
+      client.to(roomChannel(rid)).emit('room:typing_stop', {
+        roomId: rid,
         userId: client.data.userId,
       });
     }
@@ -98,7 +135,6 @@ export class ChatGateway
 
       const oldMsgs = await this.messagesService.getGeneralMessages(30);
 
-      // Adrien: on push l'historique direct quand le user rejoint
       client.emit('general:init', oldMsgs);
 
       this.server.to('general').emit('general:user_joined', {
@@ -254,6 +290,236 @@ export class ChatGateway
       }
 
       this.server.to('general').emit('general:reaction_removed', {
+        messageId,
+        reactionId,
+        userId,
+        emoji,
+      });
+
+      return { ok: true };
+    } catch (error) {
+      throw this.toWsError(error);
+    }
+  }
+
+  @SubscribeMessage('room:join')
+  async joinRoom(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: RoomJoinBody,
+  ) {
+    try {
+      const roomId = body.roomId?.trim();
+      const bodyUserId = body.userId?.trim() || '';
+      const socketUserId =
+        typeof client.data.userId === 'string' ? client.data.userId : '';
+      const userId = socketUserId || bodyUserId;
+
+      if (!roomId || !userId) {
+        throw new WsException('roomId et userId requis');
+      }
+
+      const { room, me } = await this.roomsService.getRoomForUser(roomId, userId);
+
+      if (!socketUserId) {
+        const user = await this.usersService.findPublicById(userId);
+
+        if (!user) {
+          throw new WsException('user introuvable');
+        }
+
+        client.data.userId = user.id;
+        client.data.userName = user.name || user.email;
+      }
+
+      await client.join(roomChannel(room.id));
+
+      const history = await this.messagesService.getRoomMessages({
+        roomId: room.id,
+        canSeeHistory: me.canSeeHistory,
+        memberJoinedAt: me.joinedAt,
+      });
+
+      client.emit('room:init', { roomId: room.id, messages: history });
+
+      return { ok: true, roomId: room.id };
+    } catch (error) {
+      throw this.toWsError(error);
+    }
+  }
+
+  @SubscribeMessage('room:send')
+  async sendRoomMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: RoomSendBody,
+  ) {
+    try {
+      const roomId = body.roomId?.trim();
+      const content = body.content?.trim();
+      const userId =
+        typeof client.data.userId === 'string' ? client.data.userId : '';
+
+      if (!userId) {
+        throw new WsException('join une room avant');
+      }
+
+      if (!roomId || !content) {
+        throw new WsException('roomId et content requis');
+      }
+
+      await this.roomsService.getRoomForUser(roomId, userId);
+
+      const msgSaved = await this.messagesService.createMessage(
+        userId,
+        content,
+        roomId,
+      );
+
+      const typingRooms: Set<string> = client.data.typingRooms ?? new Set();
+
+      if (typingRooms.has(roomId)) {
+        typingRooms.delete(roomId);
+        client.to(roomChannel(roomId)).emit('room:typing_stop', {
+          roomId,
+          userId,
+        });
+      }
+
+      this.server
+        .to(roomChannel(roomId))
+        .emit('room:new_message', { roomId, message: msgSaved });
+
+      return { ok: true, messageId: msgSaved.id };
+    } catch (error) {
+      throw this.toWsError(error);
+    }
+  }
+
+  @SubscribeMessage('room:typing_start')
+  async onRoomTypingStart(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: RoomTypingBody,
+  ) {
+    const userId =
+      typeof client.data.userId === 'string' ? client.data.userId : '';
+    const roomId = body.roomId?.trim();
+
+    if (!userId || !roomId) {
+      return;
+    }
+
+    const typingRooms: Set<string> = client.data.typingRooms ?? new Set();
+    client.data.typingRooms = typingRooms;
+
+    if (typingRooms.has(roomId)) {
+      return;
+    }
+
+    typingRooms.add(roomId);
+
+    client.to(roomChannel(roomId)).emit('room:typing_start', {
+      roomId,
+      userId,
+      name: client.data.userName || 'unknown',
+    });
+  }
+
+  @SubscribeMessage('room:typing_stop')
+  async onRoomTypingStop(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: RoomTypingBody,
+  ) {
+    const userId =
+      typeof client.data.userId === 'string' ? client.data.userId : '';
+    const roomId = body.roomId?.trim();
+
+    if (!userId || !roomId) {
+      return;
+    }
+
+    const typingRooms: Set<string> = client.data.typingRooms ?? new Set();
+
+    if (!typingRooms.has(roomId)) {
+      return;
+    }
+
+    typingRooms.delete(roomId);
+
+    client.to(roomChannel(roomId)).emit('room:typing_stop', {
+      roomId,
+      userId,
+    });
+  }
+
+  @SubscribeMessage('room:reaction_add')
+  async onRoomReactionAdd(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: RoomReactionBody,
+  ) {
+    try {
+      const userId =
+        typeof client.data.userId === 'string' ? client.data.userId : '';
+      const roomId = body.roomId?.trim();
+      const messageId = body.messageId?.trim();
+      const emoji = body.emoji?.trim();
+
+      if (!userId || !roomId || !messageId || !emoji) {
+        throw new WsException('données manquantes');
+      }
+
+      await this.roomsService.getRoomForUser(roomId, userId);
+
+      const { reaction, alreadyThere } = await this.messagesService.addReaction(
+        messageId,
+        userId,
+        emoji,
+      );
+
+      if (alreadyThere) {
+        return { ok: true, already: true };
+      }
+
+      this.server.to(roomChannel(roomId)).emit('room:reaction_added', {
+        roomId,
+        messageId,
+        reaction,
+      });
+
+      return { ok: true };
+    } catch (error) {
+      throw this.toWsError(error);
+    }
+  }
+
+  @SubscribeMessage('room:reaction_remove')
+  async onRoomReactionRemove(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: RoomReactionBody,
+  ) {
+    try {
+      const userId =
+        typeof client.data.userId === 'string' ? client.data.userId : '';
+      const roomId = body.roomId?.trim();
+      const messageId = body.messageId?.trim();
+      const emoji = body.emoji?.trim();
+
+      if (!userId || !roomId || !messageId || !emoji) {
+        throw new WsException('données manquantes');
+      }
+
+      await this.roomsService.getRoomForUser(roomId, userId);
+
+      const { removed, reactionId } = await this.messagesService.removeReaction(
+        messageId,
+        userId,
+        emoji,
+      );
+
+      if (!removed) {
+        return { ok: true, missing: true };
+      }
+
+      this.server.to(roomChannel(roomId)).emit('room:reaction_removed', {
+        roomId,
         messageId,
         reactionId,
         userId,

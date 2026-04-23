@@ -17,17 +17,45 @@ model User {
   updatedAt DateTime  @updatedAt
   messages  Message[]
   reactions Reaction[]
+  ownedRooms Room[]       @relation("RoomOwner")
+  roomMemberships RoomMember[]
+}
+
+model Room {
+  id        String       @id @default(cuid())
+  name      String
+  ownerId   String
+  createdAt DateTime     @default(now())
+  owner     User         @relation("RoomOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members   RoomMember[]
+  messages  Message[]
+}
+
+model RoomMember {
+  id            String   @id @default(cuid())
+  roomId        String
+  userId        String
+  joinedAt      DateTime @default(now())
+  canSeeHistory Boolean  @default(false)
+  room          Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+  @@index([userId])
 }
 
 model Message {
   id        String   @id @default(cuid())
   content   String
   userId    String
+  roomId    String?
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  room      Room?    @relation(fields: [roomId], references: [id], onDelete: Cascade)
   reactions Reaction[]
 
   @@index([userId, createdAt])
+  @@index([roomId, createdAt])
 }
 
 model Reaction {

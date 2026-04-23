@@ -26,7 +26,7 @@ export class MessagesService {
     });
   }
 
-  async createMessage(userId: string, content: string) {
+  async createMessage(userId: string, content: string, roomId: string | null = null) {
     const usr = await this.usersService.findPublicById(userId);
 
     if (!usr) {
@@ -36,14 +36,37 @@ export class MessagesService {
     const messageTxt = content.trim();
 
     return this.prisma.message.create({
-      data: { userId: usr.id, content: messageTxt },
+      data: { userId: usr.id, content: messageTxt, roomId: roomId ?? null },
       include: this.msgInclude,
     });
   }
 
   async getGeneralMessages(limit = 30) {
     const msgs = await this.prisma.message.findMany({
+      where: { roomId: null },
       take: limit,
+      orderBy: { createdAt: 'desc' },
+      include: this.msgInclude,
+    });
+
+    return msgs.reverse();
+  }
+
+  async getRoomMessages(params: {
+    roomId: string;
+    canSeeHistory: boolean;
+    memberJoinedAt: Date;
+    limit?: number;
+  }) {
+    const take = params.limit ?? 50;
+
+    const where = params.canSeeHistory
+      ? { roomId: params.roomId }
+      : { roomId: params.roomId, createdAt: { gte: params.memberJoinedAt } };
+
+    const msgs = await this.prisma.message.findMany({
+      where,
+      take,
       orderBy: { createdAt: 'desc' },
       include: this.msgInclude,
     });
